@@ -8,6 +8,7 @@ import shutil
 import optparse
 import pprint
 import yaml
+import json
 
 
 class Tasks:
@@ -15,6 +16,8 @@ class Tasks:
         parser = optparse.OptionParser()
         parser.add_option("-t", dest="task",
                           help="specify the main task [%s]" % ', '.join(['build', 'serve']))
+        parser.add_option("--ignore-dirs", dest="ignore_dirs", default=json.dumps([]),
+                          help="specify the masks to be ignored for mkdocs")
         parser.add_option("--theme", dest="theme", default="mkdocs",
                           help="specify the name of mkdocs theme")
         parser.add_option("-V", "--verbose", dest="verbose", action="store_true", default=False,
@@ -25,13 +28,20 @@ class Tasks:
 
         self._setup()
 
-        getattr(self, self._options.task)()
+        assert self._options.task in ['build', 'serve']
+
+        self.mkdocs()
 
     def _setup(self):
         self.mkdocs_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__)))
         self.project_root = os.path.abspath(
             os.path.join(self.mkdocs_root, '..'))
+
+        self.ignore_dirs = [
+            os.path.abspath(os.path.join(self.project_root, p))
+            for p in json.loads(self._options.ignore_dirs)
+        ]
 
     def _dirs(self, p):
         res = []
@@ -77,7 +87,7 @@ class Tasks:
 
             return {
                 'fname': parts[-1],
-                'file': md,
+                'file': os.path.relpath(md, os.path.join(self.mkdocs_root, 'docs')),
                 'title': title,
                 'folders': dir_parts
             }
@@ -144,17 +154,31 @@ class Tasks:
         if self._options.verbose:
             pprint.pprint([mkds, entries, hierarchy, _config])
 
-        _yaml = yaml.dump(_config, default_flow_style=False)
+        _yaml = \
+            r"""site_name: {site_name}
+theme: {theme}
+
+pages:
+{pages}""".format(
+                site_name=_config['site_name'],
+                theme=_config['theme'],
+                pages=yaml.dump(_config['pages'], default_flow_style=False)
+            )
 
         return _yaml
 
-    def build(self):
-        fs = [p for p in glob.glob(os.path.join(self.project_root, '*'))
-              if os.path.relpath(os.path.abspath(p), self.mkdocs_root) != '.']
+    def mkdocs(self):
+        fs = [
+            p for p in
+            glob.glob(os.path.join(self.project_root, '*/')) +
+            glob.glob(os.path.join(self.project_root, '*.md'))
+            if not os.path.abspath(p) in
+            [self.mkdocs_root] + self.ignore_dirs
+        ]
 
         os.system(r"""
         cd {mkdocs_root};
-        rm -fr docs;
+        rm -fr docs site;
         mkdir -p docs;
         """.format(mkdocs_root=self.mkdocs_root))
 
@@ -170,17 +194,14 @@ class Tasks:
         with io.open(os.path.join(self.mkdocs_root, 'mkdocs.yml'), 'w') as f:
             f.write(u'' + self._generate())
 
-
         os.system(r"""
         cd {mkdocs_root};
-        {python} -m mkdocs build;
-        """.format(python=sys.executable, mkdocs_root=self.mkdocs_root))
-
-    def serve(self):
-        os.system(r"""
-        cd {mkdocs_root};
-        {python} -m mkdocs serve;
-        """.format(python=sys.executable, mkdocs_root=self.mkdocs_root))
+        {python} -m mkdocs {task};
+        """.format(
+            python=sys.executable,
+            mkdocs_root=self.mkdocs_root,
+            task=self._options.task)
+        )
 
 
 if __name__ == '__main__':
